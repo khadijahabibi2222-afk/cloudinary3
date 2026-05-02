@@ -271,13 +271,22 @@ router.delete('/:id', auth, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════
-// PUT / — legacy bulk replace (kept for backward compatibility)
+// PUT / — legacy bulk upsert (kept for backward compatibility)
+//
+// ⚠️  SAFETY NOTE: This route intentionally does NOT delete
+// records that are absent from the incoming array.
+// The old `deleteMany({ id: { $nin: ids } })` was removed
+// because a timeout during load produces an empty array,
+// which would wipe the entire database.
+//
+// Use DELETE /orphans/:id for individual record removal.
 // ════════════════════════════════════════════════════════════
 router.put('/', auth, async (req, res) => {
   try {
     const list = req.body;
-    if (!Array.isArray(list)) return res.status(400).json({ error: 'Array expected' });
-    if (list.length > 1000)   return res.status(400).json({ error: 'Max 1000 items per request. Use /bulk for imports.' });
+    if (!Array.isArray(list))  return res.status(400).json({ error: 'Array expected' });
+    if (list.length === 0)     return res.status(400).json({ error: 'Empty array — refusing to process. Use DELETE /orphans/:id to remove individual records.' });
+    if (list.length > 1000)    return res.status(400).json({ error: 'Max 1000 items per request. Use /bulk for imports.' });
 
     const ops = list.map(o => ({
       updateOne: {
@@ -286,13 +295,18 @@ router.put('/', auth, async (req, res) => {
         upsert: true,
       },
     }));
-    if (ops.length) await Orphan.bulkWrite(ops, { ordered: false });
-
-    const ids = list.map(o => o.id).filter(Boolean);
-    if (ids.length) await Orphan.deleteMany({ id: { $nin: ids } });
+    const result = await Orphan.bulkWrite(ops, { ordered: false });
 
     await cache.delPattern('orphans*');
-    res.json({ ok: true, count: list.length });
+
+    logger.info('PUT /orphans bulk-upsert', {
+      total: list.length,
+      upserted: result.upsertedCount,
+      modified: result.modifiedCount,
+      user: req.user.username,
+    });
+
+    res.json({ ok: true, count: list.length, upserted: result.upsertedCount, modified: result.modifiedCount });
   } catch (err) {
     logger.error('PUT /orphans (bulk) error', { err: err.message });
     res.status(500).json({ error: err.message });

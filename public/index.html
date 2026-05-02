@@ -2436,6 +2436,57 @@ function canAdmin() { return currentUser && currentUser.role === 'admin'; }
 // ======================================================
 // APP INIT
 // ======================================================
+// ======================================================
+// COLD-START WAKE — polls /api/health until Render server
+// finishes its 2–4 minute cold start, then returns.
+// Shows a live countdown banner so the user knows to wait.
+// ======================================================
+async function wakeServer() {
+  const MAX_WAIT_MS  = 5 * 60 * 1000; // 5 minutes max
+  const POLL_MS      = 5000;           // check every 5 s
+  const start        = Date.now();
+
+  // Create (or reuse) a status banner element
+  let banner = document.getElementById('coldStartBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'coldStartBanner';
+    banner.style.cssText = [
+      'position:fixed','top:0','left:0','right:0','z-index:9999',
+      'background:#1e293b','color:#f8fafc','font-family:inherit',
+      'padding:10px 18px','font-size:.9rem','text-align:center',
+      'display:flex','align-items:center','justify-content:center','gap:10px',
+    ].join(';');
+    document.body.prepend(banner);
+  }
+
+  const _setBanner = (msg) => { banner.innerHTML = msg; banner.style.display = 'flex'; };
+  const _hideBanner = ()   => { banner.style.display = 'none'; };
+
+  let attempt = 0;
+  while (Date.now() - start < MAX_WAIT_MS) {
+    attempt++;
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    _setBanner(
+      `<span style="font-size:1.1rem">⏳</span>` +
+      `<span>در حال راه‌اندازی سرور — لطفاً صبر کنید` +
+      (attempt > 1 ? ` (${elapsed}ث)` : '') +
+      `</span>`
+    );
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), POLL_MS - 500);
+      const res = await fetch('/api/health', { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok) { _hideBanner(); return; }  // server is up ✅
+    } catch (_) { /* timeout or network error — keep polling */ }
+    // Wait before next poll (but not after the last failed attempt)
+    await new Promise(r => setTimeout(r, POLL_MS));
+  }
+  // Give up waiting; let the actual data requests fail with their own error messages
+  _hideBanner();
+}
+
 async function bootApp() {
   setLang('fa');
   document.getElementById('loginPage').style.display = 'none';
@@ -2445,6 +2496,9 @@ async function bootApp() {
   document.getElementById('sidebarAvatar').textContent = currentUser.fullName.charAt(0).toUpperCase();
   const navUsers = document.getElementById('nav-users');
   if (navUsers) navUsers.style.display = canAdmin() ? '' : 'none';
+
+  // ── Wait for Render cold start before firing all requests ──
+  await wakeServer();
 
   try {
     // Fetch all data from MongoDB in parallel
@@ -2518,6 +2572,13 @@ async function startApp() { await bootApp(); }
 // ORPHAN DATA
 // ======================================================
 async function saveOrphans() {
+  // Safety guard: never send an empty array to PUT /orphans.
+  // An empty array means local state was never loaded (e.g. cold-start timeout).
+  // The server also rejects empty arrays, but this is a client-side defence layer.
+  if (!orphans || orphans.length === 0) {
+    console.warn('saveOrphans() skipped — orphans array is empty (likely unloaded).');
+    return;
+  }
   await API.saveOrphans(orphans);
   document.getElementById('orphanCountBadge').textContent = orphans.length;
 }
