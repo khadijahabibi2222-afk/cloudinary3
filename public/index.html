@@ -2460,9 +2460,9 @@ async function bootApp() {
       API.getKV('books'),
       API.getKV('bookTx'),
     ]);
-    orphans   = orph   || [];
+    orphans   = (orph  && Array.isArray(orph.data)  ? orph.data  : orph)  || [];
     schools   = sch    || [];
-    sponsors  = spons  || [];
+    sponsors  = (spons && Array.isArray(spons.data) ? spons.data : spons) || [];
     users     = usrs   || [];
     subjects  = (subj  || []).map(s => typeof s === 'string' ? {name:s,teacher:'',time:''} : s);
     scores    = scr    || [];
@@ -2523,7 +2523,8 @@ async function saveOrphans() {
 }
 
 async function loadOrphans() {
-  orphans = await API.getOrphans() || [];
+  const res = await API.getOrphans();
+  orphans = (res && Array.isArray(res.data) ? res.data : res) || [];
   document.getElementById('orphanCountBadge').textContent = orphans.length;
   filterOrphans();
 }
